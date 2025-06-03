@@ -8,19 +8,25 @@ using System.Threading;
 using System.Threading.Tasks;
 using Dapper;
 using MySqlConnector;
+using NUnit.Framework;
+using osu.Framework;
+using osu.Framework.Allocation;
+using osu.Framework.Platform;
+using osu.Game;
 using osu.Game.Rulesets;
 using osu.Game.Rulesets.Difficulty;
 using osu.Game.Rulesets.Mods;
 using osu.Server.Queues.ScoreStatisticsProcessor.Helpers;
 using osu.Server.Queues.ScoreStatisticsProcessor.Models;
 using osu.Server.Queues.ScoreStatisticsProcessor.Stores;
+using BeatmapManager = osu.Game.Beatmaps.BeatmapManager;
 
 namespace osu.Server.Queues.ScoreStatisticsProcessor.Processors
 {
     /// <summary>
     /// Computes the performance points of scores.
     /// </summary>
-    public class ScorePerformanceProcessor : IProcessor
+    public class ScorePerformanceProcessor : IProcessor, IDisposable
     {
         private static readonly bool check_client_version = Environment.GetEnvironmentVariable("CLIENT_CHECK_VERSION") != "0";
 
@@ -37,6 +43,52 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Processors
         public bool Verbose { get; set; }
 
         private static readonly bool write_legacy_score_pp = Environment.GetEnvironmentVariable("WRITE_LEGACY_SCORE_PP") != "0";
+
+        private HeadlessGameHost host;
+        private OsuGame osu;
+        private BeatmapManager? beatmapManager;
+
+        public ScorePerformanceProcessor()
+        {
+            host = new HeadlessLocal(@"lazer");
+            LoadOsuIntoHost(host);
+            beatmapManager = osu.Dependencies.Get<BeatmapManager>();
+            Assert.NotNull(beatmapManager, "BeatmapManager should not be null at this point.");
+        }
+
+        public void Dispose()
+        {
+            host.Exit();
+        }
+
+        public void waitForOrAssert(Func<bool> result, string failureMessage, int timeout = 60000)
+        {
+            Task task = Task.Run(() =>
+            {
+                while (!result()) Thread.Sleep(200);
+            });
+
+            Assert.True(task.Wait(timeout), failureMessage);
+        }
+
+        public OsuGameBase LoadOsuIntoHost(GameHost host, bool withBeatmap = false)
+        {
+            osu = new OsuGame();
+            Task.Factory.StartNew(() => host.Run(osu), TaskCreationOptions.LongRunning)
+                .ContinueWith(t => Assert.Fail($"Host threw exception {t.Exception}"), TaskContinuationOptions.OnlyOnFaulted);
+
+            waitForOrAssert(() => osu.IsLoaded, @"osu! failed to start in a reasonable amount of time");
+
+            bool ready = false;
+            // wait for two update frames to be executed. this ensures that all components have had a change to run LoadComplete and hopefully avoid
+            // database access (GlobalActionContainer is one to do this).
+            host.UpdateThread.Scheduler.Add(() => host.UpdateThread.Scheduler.Add(() => ready = true));
+
+            waitForOrAssert(() => ready, @"osu! failed to start in a reasonable amount of time");
+
+            return osu;
+        }
+
 
         public void RevertFromUserStats(SoloScore score, UserStats userStats, int previousVersion, MySqlConnection conn, MySqlTransaction transaction)
         {
@@ -127,21 +179,33 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Processors
                 return false;
 
             // TODO: will fail for newly ranked beatmaps for up to one minute (beatmap store purge).
-            if (!BeatmapStore.IsBeatmapValidForPerformance(beatmap, score.ruleset_id))
-                return false;
+            // if (!BeatmapStore.IsBeatmapValidForPerformance(beatmap, score.ruleset_id))
+            //     return false;
 
             Ruleset ruleset = LegacyRulesetHelper.GetRulesetFromLegacyId(score.ruleset_id);
             Mod[] mods = score.ScoreData.Mods.Select(m => m.ToMod(ruleset)).ToArray();
 
-            if (!AllModsValidForPerformance(score, mods))
-                return false;
+            // if (!AllModsValidForPerformance(score, mods))
+            //     return false;
 
             // Performance needs to be allowed for the build.
             // legacy scores don't need a build id
-            if (check_client_version && score.legacy_score_id == null && (score.build_id == null || (await buildStore.GetBuildAsync(score.build_id.Value, connection, transaction))?.allow_performance != true))
-                return false;
+            // if (check_client_version && score.legacy_score_id == null && (score.build_id == null || (await buildStore.GetBuildAsync(score.build_id.Value, connection, transaction))?.allow_performance != true))
+            //     return false;
 
-            DifficultyAttributes difficultyAttributes = await BeatmapStore.GetDifficultyAttributesAsync(beatmap, ruleset, mods, connection, transaction);
+            waitForOrAssert(() => osu.IsLoaded, @"osu! failed to start in a reasonable amount of time");
+
+            bool ready = false;
+            // wait for two update frames to be executed. this ensures that all components have had a change to run LoadComplete and hopefully avoid
+            // database access (GlobalActionContainer is one to do this).
+            host.UpdateThread.Scheduler.Add(() => host.UpdateThread.Scheduler.Add(() => ready = true));
+
+            waitForOrAssert(() => ready, @"osu! failed to start in a reasonable amount of time");
+
+            Assert.NotNull(beatmapManager,"BeatmapManager should not be null at this point.");
+            DifficultyAttributes difficultyAttributes;
+            difficultyAttributes = await BeatmapStore.GetDifficultyAttributesAsync(beatmap, ruleset, mods, connection, transaction, beatmapManager);
+
             PerformanceAttributes? performanceAttributes = ruleset.CreatePerformanceCalculator()?.Calculate(score.ToScoreInfo(), difficultyAttributes);
 
             if (performanceAttributes == null)
@@ -195,5 +259,18 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Processors
 
             return modsToCheck.All(m => m.Ranked);
         }
+
     }
+
+    public class HeadlessLocal : HeadlessGameHost {
+
+        public HeadlessLocal(string? gameName = null, HostOptions? options = null, bool realtime = true) : base(gameName, options, realtime)
+        {
+        }
+
+        // public override IEnumerable<string> UserStoragePaths => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.Create).Yield();
+        public override IEnumerable<string> UserStoragePaths => new string[1] { "/mnt/md127/" };
+
+    }
+
 }

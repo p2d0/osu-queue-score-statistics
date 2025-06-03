@@ -12,6 +12,7 @@ using Dapper;
 using Microsoft.Extensions.Caching.Memory;
 using MySqlConnector;
 using osu.Framework.IO.Network;
+using osu.Framework.Allocation;
 using osu.Game.Beatmaps;
 using osu.Game.Beatmaps.Legacy;
 using osu.Game.Rulesets;
@@ -21,6 +22,10 @@ using osu.Server.QueueProcessor;
 using osu.Server.Queues.ScoreStatisticsProcessor.Helpers;
 using osu.Server.Queues.ScoreStatisticsProcessor.Models;
 using Beatmap = osu.Server.Queues.ScoreStatisticsProcessor.Models.Beatmap;
+using osu.Game;
+using osu.Game.Tests;
+using osu.Framework.Platform;
+using NUnit.Framework;
 
 namespace osu.Server.Queues.ScoreStatisticsProcessor.Stores
 {
@@ -32,7 +37,7 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Stores
         public static readonly string? DIFF_ATTRIB_DATABASE = Environment.GetEnvironmentVariable("DB_NAME_DIFFICULTY") ?? Environment.GetEnvironmentVariable("DB_NAME") ?? "osu";
 
         private static readonly bool use_realtime_difficulty_calculation = Environment.GetEnvironmentVariable("REALTIME_DIFFICULTY") != "0";
-        private static readonly string beatmap_download_path = Environment.GetEnvironmentVariable("BEATMAP_DOWNLOAD_PATH") ?? "https://osu.ppy.sh/osu/{0}";
+        private static readonly string beatmap_download_path = Environment.GetEnvironmentVariable("BEATMAP_DOWNLOAD_PATH") ?? "http://localhost:8080/osu/{0}";
         private static readonly uint memory_cache_size_limit = uint.Parse(Environment.GetEnvironmentVariable("MEMORY_CACHE_SIZE_LIMIT") ?? "128000000");
         private static readonly TimeSpan memory_cache_sliding_expiration = TimeSpan.FromSeconds(uint.Parse(Environment.GetEnvironmentVariable("MEMORY_CACHE_SLIDING_EXPIRATION_SECONDS") ?? "3600"));
 
@@ -120,6 +125,7 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Stores
             });
         }
 
+
         /// <summary>
         /// Retrieves difficulty attributes from the database.
         /// </summary>
@@ -131,20 +137,24 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Stores
         /// <returns>The difficulty attributes or <c>null</c> if not existing.</returns>
         /// <exception cref="DifficultyAttributesMissingException">If the difficulty attributes don't exist in the database.</exception>
         /// <exception cref="Exception">If realtime difficulty attributes couldn't be computed.</exception>
-        public static async Task<DifficultyAttributes> GetDifficultyAttributesAsync(Beatmap beatmap, Ruleset ruleset, Mod[] mods, MySqlConnection connection, MySqlTransaction? transaction = null)
+        public static async Task<DifficultyAttributes> GetDifficultyAttributesAsync(Beatmap beatmap, Ruleset ruleset, Mod[] mods, MySqlConnection connection, MySqlTransaction? transaction = null,osu.Game.Beatmaps.BeatmapManager? beatmapManager = null)
         {
             if (use_realtime_difficulty_calculation)
             {
-                using var req = new WebRequest(string.Format(beatmap_download_path, beatmap.beatmap_id));
+                // using var req = new WebRequest(string.Format(beatmap_download_path, beatmap.beatmap_id));
 
-                req.AllowInsecureRequests = true;
+                // req.AllowInsecureRequests = true;
 
-                await req.PerformAsync().ConfigureAwait(false);
+                // await req.PerformAsync().ConfigureAwait(false);
 
-                if (req.ResponseStream.Length == 0)
-                    throw new Exception($"Retrieved zero-length beatmap ({beatmap.beatmap_id})!");
+                // if (req.ResponseStream.Length == 0)
+                //     throw new Exception($"Retrieved zero-length beatmap ({beatmap.beatmap_id})!");
 
-                var workingBeatmap = new StreamedWorkingBeatmap(req.ResponseStream);
+                Assert.NotNull(beatmap, $"beatmap with ID {beatmap.beatmap_id} not found in the database.");
+                Assert.NotNull(beatmapManager, $"beatmapmanager is null, cannot retrieve working beatmap for {beatmap.beatmap_id}.");
+                var bm = beatmapManager.QueryBeatmap(b => b.MD5Hash == beatmap.checksum);
+                Assert.NotNull(bm, $"Beatmap with MD5 {beatmap.checksum} not found in the database.");
+                var workingBeatmap = beatmapManager.GetWorkingBeatmap(bm);
                 var calculator = ruleset.CreateDifficultyCalculator(workingBeatmap);
 
                 return calculator.Calculate(mods);

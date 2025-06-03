@@ -22,6 +22,8 @@ namespace osu.Server.Queues.ScoreStatisticsProcessor.Models
 
         public uint user_id { get; set; }
 
+        public string checksum { get; set; }
+
         public uint countTotal { get; set; }
         public uint countNormal { get; set; }
         public uint countSlider { get; set; }
